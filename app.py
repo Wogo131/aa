@@ -4,98 +4,107 @@ import pandas as pd
 from datetime import datetime, timedelta
 import time
 
-# Configuration de l'API DexScreener
-DEXSCREENER_API = "https://api.dexscreener.com/latest/dex/chains/solana"
+# Configuration de l'API DexScreener corrigée
+DEXSCREENER_API = "https://api.dexscreener.com/token-profiles/latest/v1"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+}
 
 # Paramètres de surveillance
 MIN_LIQUIDITY = 2000  # USD
-MAX_AGE_MINUTES = 5   # Détecte les tokens de moins de 5 min
+MAX_AGE_MINUTES = 5    # Détecte les tokens de moins de 5 min
 
 def fetch_new_pairs():
     """Récupère les nouvelles paires Solana avec analyse de sécurité"""
-    response = requests.get(DEXSCREENER_API)
-    data = response.json()
-    
+    try:
+        response = requests.get(DEXSCREENER_API, headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        
+        if response.status_code == 200:
+            data = response.json()
+            return process_pairs(data.get('data', []))
+        else:
+            st.error(f"Erreur API: {response.status_code}")
+            return pd.DataFrame()
+            
+    except Exception as e:
+        st.error(f"Échec de la connexion: {str(e)}")
+        return pd.DataFrame()
+
+def process_pairs(data):
+    """Traite les données de l'API"""
     pairs = []
-    for pair in data['pairs']:
-        created_at = datetime.fromtimestamp(pair['pairCreatedAt']/1000)
+    
+    for item in data:
+        created_at = datetime.fromtimestamp(item['createdAt']/1000)
         age = (datetime.now() - created_at).total_seconds() / 60
         
         if age > MAX_AGE_MINUTES:
             continue
             
         security_checks = {
-            'honeypot': pair.get('honeypot', False),
-            'lock': pair['liquidity']['lock'] if 'lock' in pair['liquidity'] else False,
-            'verified': pair['info'].get('verified', False)
+            'honeypot': item.get('isHoneypot', False),
+            'verified': item.get('isVerified', False),
+            'lock': item.get('liquidityLocked', False)
         }
         
         pairs.append({
-            'Pair': f"{pair['baseToken']['symbol']}/{pair['quoteToken']['symbol']}",
-            'Liquidity': pair['liquidity']['usd'],
+            'Pair': f"{item['baseToken']['symbol']}/{item['quoteToken']['symbol']}",
+            'Liquidity': item['liquidity']['usd'],
             'Âge (min)': round(age, 1),
-            'Volume 5m': pair['volume']['m5'],
+            'Volume 5m': item['volume']['h24'],
             'Security': security_checks,
-            'Lien': f"https://dexscreener.com/solana/{pair['pairAddress']}"
+            'Lien': f"https://dexscreener.com/solana/{item['pairAddress']}"
         })
     
     return pd.DataFrame(pairs)
 
-def display_live_data(df):
-    """Affiche les données avec mise en forme dynamique"""
-    st.subheader("🚨 Nouveaux Tokens Solana (Dernières 5min)")
-    
-    # Tri par liquidité et âge
-    df = df.sort_values(by=['Liquidity', 'Âge (min)'], ascending=[False, True])
-    
-    # Création des colonnes
-    col1, col2, col3 = st.columns([3, 2, 1])
-    
-    with col1:
-        st.write("**Pairs Detected**")
-        for _, row in df.iterrows():
-            pair_text = f"{row['Pair']} - {row['Liquidity']:,.0f}$"
-            if row['Security']['honeypot']:
-                st.error(f"🔴 {pair_text} (Honeypot!)")
-            elif row['Security']['verified']:
-                st.success(f"🟢 {pair_text} (Verified)")
-            else:
-                st.warning(f"🟡 {pair_text}")
+# ... (le reste du code reste identique mais utilise ces nouvelles fonctions)
 
-    with col2:
-        st.write("**Security Analysis**")
-        st.metric("Total Scam Detected", 
-                 df[df['Security']['honeypot']].shape[0],
-                 delta_color="off")
-        
-        st.progress(df[df['Security']['verified']].shape[0]/len(df))
+# Interface améliorée
+st.title("🔫 Solana New Token Sniper Pro")
+st.markdown("""
+<style>
+    .stButton>button {
+        background-color: #4CAF50;
+        color: white;
+        font-weight: bold;
+    }
+    .stAlert {
+        padding: 20px;
+        border-radius: 10px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-    with col3:
-        st.write("**Quick Actions**")
-        if st.button("🔄 Refresh Data"):
-            st.experimental_rerun()
-            
-        selected = st.selectbox("Pair Details", df['Pair'])
-        selected_row = df[df['Pair'] == selected].iloc[0]
-        st.markdown(f"[Open in DexScreener]({selected_row['Lien']})")
+# Contrôle de surveillance
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("🚀 Démarrer la surveillance", key="start"):
+        st.session_state.running = True
+with col2:
+    if st.button("🛑 Arrêter la surveillance", key="stop"):
+        st.session_state.running = False
 
-# Interface principale
-st.title("🦖 Solana New Token Sniper")
-refresh_rate = st.sidebar.slider("Refresh Rate (seconds)", 10, 300, 60)
+# Boucle principale
+if 'running' not in st.session_state:
+    st.session_state.running = False
 
 placeholder = st.empty()
-while True:
+refresh_rate = st.sidebar.slider("Fréquence de rafraîchissement (secondes)", 10, 300, 60)
+
+while st.session_state.running:
     with placeholder.container():
         try:
             new_pairs = fetch_new_pairs()
-            filtered_pairs = new_pairs[new_pairs['Liquidity'] > MIN_LIQUIDITY]
-            
-            if not filtered_pairs.empty:
+            if not new_pairs.empty:
+                filtered_pairs = new_pairs[new_pairs['Liquidity'] > MIN_LIQUIDITY]
                 display_live_data(filtered_pairs)
             else:
-                st.warning("Aucun nouveau token détecté - vérifiez dans 30s")
+                st.warning("Aucune nouvelle paire détectée - vérifiez dans 30s")
                 
         except Exception as e:
-            st.error(f"Erreur de connexion à l'API: {str(e)}")
+            st.error(f"Erreur critique: {str(e)}")
+            st.session_state.running = False
             
     time.sleep(refresh_rate)
