@@ -1,139 +1,101 @@
 import streamlit as st
+import requests
 import pandas as pd
+from datetime import datetime, timedelta
 import time
-from PIL import Image
 
-# Configuration de la page
-st.set_page_config(
-    page_title="DEX Bot Manager",
-    page_icon="🤖",
-    layout="wide"
-)
+# Configuration de l'API DexScreener
+DEXSCREENER_API = "https://api.dexscreener.com/latest/dex/chains/solana"
 
-# Logo et titre
-col1, col2 = st.columns([1, 4])
-with col1:
-    st.image("https://cdn-icons-png.flaticon.com/512/2413/2413422.png", width=100)
-with col2:
-    st.title("Gestionnaire Automatisé de DEX")
-    st.caption("Outils de surveillance de marchés décentralisés pour non-développeurs")
+# Paramètres de surveillance
+MIN_LIQUIDITY = 2000  # USD
+MAX_AGE_MINUTES = 5   # Détecte les tokens de moins de 5 min
 
-# Sidebar pour la configuration
-with st.sidebar:
-    st.header("⚙️ Configuration")
-    db_host = st.text_input("Adresse de la base de données", "localhost")
-    db_port = st.number_input("Port", 5432)
-    db_name = st.text_input("Nom de la base", "dexscreener")
-    db_user = st.text_input("Utilisateur", "admin")
-    db_password = st.text_input("Mot de passe", type="password")
+def fetch_new_pairs():
+    """Récupère les nouvelles paires Solana avec analyse de sécurité"""
+    response = requests.get(DEXSCREENER_API)
+    data = response.json()
     
-    st.divider()
-    
-    min_liquidity = st.number_input("Liquidité minimale (USD)", 5000)
-    min_age_days = st.number_input("Âge minimum (jours)", 3)
-    
-    st.divider()
-    
-    if st.button("🔁 Synchroniser les blacklists"):
-        with st.spinner("Synchronisation en cours..."):
-            time.sleep(2)
-            st.success("Blacklists mises à jour !")
-
-# Tableau de bord principal
-tab1, tab2, tab3 = st.tabs(["📊 Surveillance", "🚨 Alertes", "⚖️ Blacklist"])
-
-with tab1:
-    st.subheader("Pairs Actives")
-    
-    # Faux données pour la démo
-    sample_data = pd.DataFrame({
-        'Pair': ['ETH/USDC', 'BTC/USDT', 'SOL/DAI'],
-        'Liquidité (USD)': [15000, 22000, 8000],
-        'Volume 24h': [4500, 7800, 1200],
-        'Statut': ['✅ Sécurisé', '⚠️ A surveiller', '❌ Risqué']
-    })
-    
-    st.dataframe(
-        sample_data,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Liquidité (USD)": st.column_config.ProgressColumn(
-                format="$%f",
-                min_value=0,
-                max_value=30000
-            )
-        }
-    )
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total en Surveillance", "$45,000", "+12%")
-    with col2:
-        st.metric("Alertes Actives", "3", "-2%")
-    with col3:
-        st.metric("Taux de Sécurité", "92%", "4%")
-
-with tab2:
-    st.subheader("Alertes Récentes")
-    
-    alerts = pd.DataFrame({
-        'Date': ['2024-03-15 14:30', '2024-03-15 12:45', '2024-03-14 18:20'],
-        'Pair': ['SUSPECT/ETH', 'RISKY/USDT', 'UNKNOWN/BTC'],
-        'Raison': ['Liquidité suspecte', 'Adresse blacklistée', 'Volume anormal'],
-        'Niveau': ['Haute', 'Critique', 'Moyenne']
-    })
-    
-    st.dataframe(
-        alerts,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Niveau": st.column_config.SelectboxColumn(
-                options=["Basse", "Moyenne", "Haute", "Critique"]
-            )
-        }
-    )
-
-with tab3:
-    st.subheader("Gestion des Blacklists")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("**Ajouter une entrée**")
-        blacklist_type = st.selectbox("Type", ["Token", "Développeur"])
-        address = st.text_input("Adresse")
-        reason = st.text_area("Raison")
+    pairs = []
+    for pair in data['pairs']:
+        created_at = datetime.fromtimestamp(pair['pairCreatedAt']/1000)
+        age = (datetime.now() - created_at).total_seconds() / 60
         
-        if st.button("Ajouter à la blacklist"):
-            if address and reason:
-                st.success("Entrée ajoutée !")
-            else:
-                st.error("Remplissez tous les champs")
-    
-    with col2:
-        st.write("**Liste actuelle**")
-        blacklist = pd.DataFrame({
-            'Adresse': ['0x123...def', '0x456...abc'],
-            'Type': ['Token', 'Développeur'],
-            'Raison': ['Scam connu', 'Activité suspecte']
+        if age > MAX_AGE_MINUTES:
+            continue
+            
+        security_checks = {
+            'honeypot': pair.get('honeypot', False),
+            'lock': pair['liquidity']['lock'] if 'lock' in pair['liquidity'] else False,
+            'verified': pair['info'].get('verified', False)
+        }
+        
+        pairs.append({
+            'Pair': f"{pair['baseToken']['symbol']}/{pair['quoteToken']['symbol']}",
+            'Liquidity': pair['liquidity']['usd'],
+            'Âge (min)': round(age, 1),
+            'Volume 5m': pair['volume']['m5'],
+            'Security': security_checks,
+            'Lien': f"https://dexscreener.com/solana/{pair['pairAddress']}"
         })
-        
-        st.dataframe(
-            blacklist,
-            use_container_width=True,
-            hide_index=True
-        )
-
-# Contrôle principal
-st.divider()
-col1, col2, col3 = st.columns([2, 1, 2])
-with col2:
-    if st.button("🚀 Démarrer la surveillance", type="primary"):
-        with st.spinner("Surveillance en cours..."):
-            time.sleep(2)
-            st.toast("Surveillance active !", icon="✅")
     
-    if st.button("🛑 Arrêter la surveillance"):
-        st.toast("Surveillance arrêtée", icon="⚠️")
+    return pd.DataFrame(pairs)
+
+def display_live_data(df):
+    """Affiche les données avec mise en forme dynamique"""
+    st.subheader("🚨 Nouveaux Tokens Solana (Dernières 5min)")
+    
+    # Tri par liquidité et âge
+    df = df.sort_values(by=['Liquidity', 'Âge (min)'], ascending=[False, True])
+    
+    # Création des colonnes
+    col1, col2, col3 = st.columns([3, 2, 1])
+    
+    with col1:
+        st.write("**Pairs Detected**")
+        for _, row in df.iterrows():
+            pair_text = f"{row['Pair']} - {row['Liquidity']:,.0f}$"
+            if row['Security']['honeypot']:
+                st.error(f"🔴 {pair_text} (Honeypot!)")
+            elif row['Security']['verified']:
+                st.success(f"🟢 {pair_text} (Verified)")
+            else:
+                st.warning(f"🟡 {pair_text}")
+
+    with col2:
+        st.write("**Security Analysis**")
+        st.metric("Total Scam Detected", 
+                 df[df['Security']['honeypot']].shape[0],
+                 delta_color="off")
+        
+        st.progress(df[df['Security']['verified']].shape[0]/len(df))
+
+    with col3:
+        st.write("**Quick Actions**")
+        if st.button("🔄 Refresh Data"):
+            st.experimental_rerun()
+            
+        selected = st.selectbox("Pair Details", df['Pair'])
+        selected_row = df[df['Pair'] == selected].iloc[0]
+        st.markdown(f"[Open in DexScreener]({selected_row['Lien']})")
+
+# Interface principale
+st.title("🦖 Solana New Token Sniper")
+refresh_rate = st.sidebar.slider("Refresh Rate (seconds)", 10, 300, 60)
+
+placeholder = st.empty()
+while True:
+    with placeholder.container():
+        try:
+            new_pairs = fetch_new_pairs()
+            filtered_pairs = new_pairs[new_pairs['Liquidity'] > MIN_LIQUIDITY]
+            
+            if not filtered_pairs.empty:
+                display_live_data(filtered_pairs)
+            else:
+                st.warning("Aucun nouveau token détecté - vérifiez dans 30s")
+                
+        except Exception as e:
+            st.error(f"Erreur de connexion à l'API: {str(e)}")
+            
+    time.sleep(refresh_rate)
